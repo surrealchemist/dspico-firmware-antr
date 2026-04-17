@@ -7,16 +7,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Non-recursive: only init top-level submodules (pico-sdk).
           # The pico-sdk's own submodules are initialized in the next step.
@@ -101,7 +98,7 @@ jobs:
           zip -j DSpico-firmware.zip dist/*
 
       - name: Upload firmware zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DSpico-firmware
           path: DSpico-firmware.zip
