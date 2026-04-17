@@ -1,0 +1,105 @@
+name: Build DSpico Firmware
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Non-recursive: only init top-level submodules (pico-sdk).
+          # The pico-sdk's own submodules are initialized in the next step.
+          submodules: true
+
+      - name: Initialize pico-sdk submodules
+        # Per the README, do NOT use --recursive from the repo root; instead
+        # init pico-sdk's submodules from inside its directory.
+        run: |
+          cd pico-sdk
+          git submodule update --init
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi build-essential
+
+      - name: Prepare ROM files
+        # roms/default.nds is hard-required: romData.S embeds it with .incbin.
+        # Provide it as a base64-encoded GitHub Actions secret (DEFAULT_NDS_BASE64)
+        # for a functional firmware build. If the secret is absent, GodMode9i
+        # (open-source DS homebrew) is downloaded as a compile-validation fallback —
+        # the resulting .uf2 will build cleanly but won't function on real hardware.
+        env:
+          DEFAULT_NDS_BASE64:    ${{ secrets.DEFAULT_NDS_BASE64 }}
+          DSIMODE_NDS_BASE64:    ${{ secrets.DSIMODE_NDS_BASE64 }}
+          NTRBOOT_NDS_BASE64:    ${{ secrets.NTRBOOT_NDS_BASE64 }}
+          NTRBOOTDSI_NDS_BASE64: ${{ secrets.NTRBOOTDSI_NDS_BASE64 }}
+        run: |
+          # Required
+          if [ -n "$DEFAULT_NDS_BASE64" ]; then
+            echo "$DEFAULT_NDS_BASE64" | base64 --decode > roms/default.nds
+          else
+            echo "::notice::SECRET 'DEFAULT_NDS_BASE64' not set. Downloading GodMode9i as a compile-validation placeholder."
+            GODMODE9I_URL=$(curl -fsSL https://api.github.com/repos/DS-Homebrew/GodMode9i/releases/latest \
+              | grep '"browser_download_url"' \
+              | grep 'GodMode9i\.nds"' \
+              | head -1 \
+              | sed 's/.*"browser_download_url": "\(.*\)"/\1/')
+            curl -fsSL "$GODMODE9I_URL" -o roms/default.nds
+            echo "::notice::Using GodMode9i $(basename "$GODMODE9I_URL" .nds) as default.nds placeholder."
+          fi
+
+          # Optional: separate DSi rom (enables DETECT_CONSOLE_TYPE)
+          if [ -n "$DSIMODE_NDS_BASE64" ]; then
+            echo "$DSIMODE_NDS_BASE64" | base64 --decode > roms/dsimode.nds
+          fi
+
+          # Optional: ntrboot roms (enable ENABLE_NTRBOOT_AUTO_DETECTION / _CONSOLE_TYPE_DETECTION)
+          if [ -n "$NTRBOOT_NDS_BASE64" ]; then
+            echo "$NTRBOOT_NDS_BASE64" | base64 --decode > roms/ntrboot.nds
+          fi
+          if [ -n "$NTRBOOTDSI_NDS_BASE64" ]; then
+            echo "$NTRBOOTDSI_NDS_BASE64" | base64 --decode > roms/ntrbootdsi.nds
+          fi
+
+      - name: Configure CMake
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          cmake -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo \
+            -B build/ .
+
+      - name: Build firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          CMAKE_BUILD_PARALLEL_LEVEL: ${{ runner.os == 'Linux' && '$(nproc)' || '4' }}
+        run: |
+          cmake --build build --parallel $(nproc)
+
+      - name: Package build artifacts
+        run: |
+          mkdir -p dist
+          # Primary flashable image
+          cp build/DSpico.uf2 dist/
+          # Debug/development extras (present when CMAKE_BUILD_TYPE=RelWithDebInfo)
+          cp build/DSpico.elf dist/ 2>/dev/null || true
+          cp build/DSpico.bin dist/ 2>/dev/null || true
+          cp build/DSpico.map dist/ 2>/dev/null || true
+          zip -j DSpico-firmware.zip dist/*
+
+      - name: Upload firmware zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSpico-firmware
+          path: DSpico-firmware.zip
+          if-no-files-found: error
